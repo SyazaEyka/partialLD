@@ -140,14 +140,29 @@
 
         // --- 0. FIREBASE SETUP (PENYIMPANAN CLOUD) ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        let firebaseConfig = {};
         
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = JSON.parse(__firebase_config);
+            }
+        } catch (e) {
+            console.warn("Tiada konfigurasi awan dijumpai.");
+        }
         
-        let userId = null;
-        let dbDocRef = null;
+        let app, auth, db, userId = null, dbDocRef = null;
+        let isCloudReady = false;
+
+        try {
+            if (Object.keys(firebaseConfig).length > 0) {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                isCloudReady = true;
+            }
+        } catch (e) {
+            console.error("Gagal memuatkan Firebase:", e);
+        }
 
         // --- 1. SETUP DATA NOMBOR ---
         let availableNumbers = [];
@@ -155,48 +170,49 @@
         
         // Fungsi Muat Turun (Load) dari Cloud
         async function loadState() {
-            if (!userId) return;
-            const docSnap = await getDoc(dbDocRef);
+            if (!isCloudReady || !userId || !dbDocRef) return false;
             
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                availableNumbers = data.availableNumbers || [];
-                drawnNumbers = data.drawnNumbers || [];
-                const min = data.min || 1;
-                const max = data.max || 1000;
+            try {
+                const docSnap = await getDoc(dbDocRef);
                 
-                // Kemas kini input box
-                document.getElementById('minNum').value = min;
-                document.getElementById('maxNum').value = max;
-                
-                const padLength = Math.max(4, String(max).length);
-                const minStr = String(min).padStart(padLength, '0');
-                const maxStr = String(max).padStart(padLength, '0');
-                document.getElementById('rangeDisplay').innerText = `Nombor ${minStr} - ${maxStr}`;
-                
-                // Kemas kini senarai ui yang telah menang
-                document.getElementById('drawnCount').innerText = drawnNumbers.length;
-                const listContainer = document.getElementById('drawnList');
-                listContainer.innerHTML = '';
-                
-                if (drawnNumbers.length === 0) {
-                    listContainer.innerHTML = '<div id="emptyState" class="text-center text-white/40 italic mt-10">Belum ada cabutan dilakukan.</div>';
-                } else {
-                    drawnNumbers.forEach((num, index) => {
-                        // Papar rekod sedia ada ke dalam senarai tanpa animasi pusingan
-                        appendDrawnUI(num, drawnNumbers.length - index, false);
-                    });
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    availableNumbers = data.availableNumbers || [];
+                    drawnNumbers = data.drawnNumbers || [];
+                    const min = data.min || 1;
+                    const max = data.max || 1000;
+                    
+                    document.getElementById('minNum').value = min;
+                    document.getElementById('maxNum').value = max;
+                    
+                    const padLength = Math.max(4, String(max).length);
+                    const minStr = String(min).padStart(padLength, '0');
+                    const maxStr = String(max).padStart(padLength, '0');
+                    document.getElementById('rangeDisplay').innerText = `Nombor ${minStr} - ${maxStr}`;
+                    
+                    document.getElementById('drawnCount').innerText = drawnNumbers.length;
+                    const listContainer = document.getElementById('drawnList');
+                    listContainer.innerHTML = '';
+                    
+                    if (drawnNumbers.length === 0) {
+                        listContainer.innerHTML = '<div id="emptyState" class="text-center text-white/40 italic mt-10">Belum ada cabutan dilakukan.</div>';
+                    } else {
+                        drawnNumbers.forEach((num, index) => {
+                            appendDrawnUI(num, drawnNumbers.length - index, false);
+                        });
+                    }
+                    document.getElementById('statusMsg').innerText = "Rekod lama dijumpai. Sedia untuk mula!";
+                    return true;
                 }
-                document.getElementById('statusMsg').innerText = "Rekod lama dijumpai. Sedia untuk mula!";
-            } else {
-                // Tiada rekod dijumpai, jana baharu
-                window.generateNumbers(1, 1000);
+            } catch (e) {
+                console.error("Ralat memuat turun data:", e);
             }
+            return false;
         }
 
         // Fungsi Simpan (Save) ke Cloud
         async function saveState() {
-            if (!userId) return;
+            if (!isCloudReady || !userId || !dbDocRef) return;
             try {
                 await setDoc(dbDocRef, {
                     availableNumbers,
@@ -246,7 +262,6 @@
                 return;
             }
             
-            // Generate dan padam data lama
             window.generateNumbers(min, max);
         };
 
@@ -330,7 +345,9 @@
         // --- 4. LOGIK PUTARAN ---
         window.startSpin = async function() {
             if (isSpinning) return;
-            if (!userId) {
+            
+            // Semak sekiranya awan diaktifkan tapi id belum ada
+            if (isCloudReady && !userId) {
                 document.getElementById('statusMsg').innerText = "Sistem awan sedang dimuatkan, sila tunggu...";
                 return;
             }
@@ -413,7 +430,7 @@
             drawnNumbers.unshift(winnerNum);
             
             appendDrawnUI(winnerNum, drawnNumbers.length, true);
-            await saveState(); // Simpan ke Cloud pangkalan data setiap kali habis cabutan
+            await saveState(); // Simpan ke Cloud (jika ada sambungan)
         }
 
         // --- 6. KEMASKINI UI (SENARAI CABUTAN) ---
@@ -448,7 +465,7 @@
                 void item.offsetWidth;
                 item.classList.remove('opacity-0', 'translate-y-4');
             } else {
-                listContainer.appendChild(item); // Semasa page load, masukkan secara senyap
+                listContainer.appendChild(item);
             }
         }
 
@@ -483,24 +500,28 @@
         // --- 8. MULAKAN SISTEM & PENYIMPANAN CLOUD ---
         async function initSystem() {
             try {
-                // Log masuk sistem secara senyap menggunakan Authentication selamat
-                if (typeof __initial_auth_token !== 'undefined') {
+                if (!isCloudReady) {
+                    throw new Error("Sistem Awan tidak aktif. Bergerak ke mod offline.");
+                }
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
                 
                 userId = auth.currentUser.uid;
-                // Path selamat untuk simpanan peribadi anda
                 dbDocRef = doc(db, 'artifacts', appId, 'users', userId, 'draw_data', 'main_state');
                 
-                // Semak dan sambung sesi sebelum ini
-                await loadState();
+                const loaded = await loadState();
+                if (!loaded) {
+                    window.generateNumbers(1, 1000);
+                }
                 
             } catch (e) {
-                console.error("Ralat pangkalan data:", e);
-                // Jika offline atau ralat, ia tetap boleh digunakan seperti biasa
+                console.log("Menjalankan sistem tanpa Awan (Offline Mode):", e.message);
                 window.generateNumbers(1, 1000);
+                document.getElementById('statusMsg').innerText = "Mod tanpa simpanan awan diaktifkan.";
             }
         }
 
