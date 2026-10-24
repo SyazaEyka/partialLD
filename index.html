@@ -511,11 +511,16 @@
                 }
                 
                 userId = auth.currentUser.uid;
-                dbDocRef = doc(db, 'artifacts', appId, 'users', userId, 'draw_data', 'main_state');
+                
+                // KEMASKINI: Gunakan laluan simpanan awam (Public) supaya 
+                // data tidak hilang walaupun ID sesi pengguna di-reset oleh browser semasa refresh
+                dbDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'draw_state', 'main');
                 
                 const loaded = await loadState();
                 if (!loaded) {
                     window.generateNumbers(1, 1000);
+                } else {
+                    document.getElementById('statusMsg').innerText = "Rekod lama berjaya disambung semula!";
                 }
                 
             } catch (e) {
